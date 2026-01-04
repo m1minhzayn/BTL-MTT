@@ -1,0 +1,210 @@
+import networkx as nx
+import matplotlib.pyplot as plt
+import math
+import csv
+import os
+import copy
+
+FILENAME_GML = "AttMpls.gml"
+FILENAME_CSV = "AttDemand.csv"
+EARTH_RADIUS = 6371
+
+
+
+def haversine(lat1, lon1, lat2, lon2):
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return EARTH_RADIUS * c
+
+
+def get_capacity(dist):
+
+    if dist < 1000:
+        return 100.0
+    elif dist < 2000:
+        return 200.0
+    else:
+        return 300.0
+
+
+
+def build_topology():
+    if not os.path.exists(FILENAME_GML):
+        print(f"❌ LỖI: Không tìm thấy file {FILENAME_GML}")
+        return None
+
+    G = nx.read_gml(FILENAME_GML, label='id')
+
+    for u, v in G.edges():
+        lat1, lon1 = G.nodes[u]['Latitude'], G.nodes[u]['Longitude']
+        lat2, lon2 = G.nodes[v]['Latitude'], G.nodes[v]['Longitude']
+        dist = haversine(lat1, lon1, lat2, lon2)
+        cap = get_capacity(dist)
+
+        G[u][v]['distance'] = dist
+        G[u][v]['capacity'] = cap
+        G[u][v]['residual'] = cap
+        G[u][v]['load'] = 0.0
+
+    return G
+
+
+
+def run_simulation(G_input, demand_list, label=""):
+    """
+    Hàm này nhận vào một đồ thị và danh sách demand.
+    Trả về: (Graph đã cập nhật, List accepted, List blocked)
+    """
+    G = copy.deepcopy(G_input)
+    accepted = []
+    blocked = []
+
+    print(f"\n---> Đang chạy kịch bản: {label}...")
+
+    for row in demand_list:
+
+        d_id = row[0]
+        src = int(row[1])
+        tgt = int(row[2])
+        bw = float(row[3])
+
+
+        valid_edges = [(u, v) for u, v, d in G.edges(data=True) if d['residual'] >= bw]
+        G_temp = G.edge_subgraph(valid_edges)
+
+        try:
+
+            path = nx.shortest_path(G_temp, source=src, target=tgt, weight='distance')
+
+
+            path_edges = list(zip(path, path[1:]))
+            for u, v in path_edges:
+                G[u][v]['residual'] -= bw
+                G[u][v]['load'] += bw
+
+            accepted.append({'id': d_id, 'src': src, 'tgt': tgt, 'bw': bw, 'path': path})
+
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+            blocked.append({'id': d_id, 'src': src, 'tgt': tgt, 'bw': bw})
+
+    return G, accepted, blocked
+
+
+
+def main():
+
+    original_graph = build_topology()
+    if not original_graph: return
+
+
+    mst = nx.minimum_spanning_tree(original_graph, weight='distance')
+    print(f"Thông tin: Tổng độ dài MST = {mst.size(weight='distance'):.2f} km")
+
+
+    if not os.path.exists(FILENAME_CSV):
+        print("❌ LỖI: Không thấy file CSV demand.")
+        return
+
+    raw_demands = []
+    with open(FILENAME_CSV, 'r') as f:
+        reader = csv.reader(f)
+        for row in reader:
+            if len(row) >= 4 and row[0].isdigit():
+                raw_demands.append(row)
+
+
+
+
+    G_fifo, acc_fifo, blk_fifo = run_simulation(original_graph, raw_demands, label="FIFO (Thứ tự gốc)")
+
+
+    print("\n" + "=" * 60)
+    print(f"Số lượng demand được chấp nhận (N): {len(acc_fifo)} / {len(raw_demands)}")
+    print("=" * 60)
+
+
+    print(f"\n Bảng chi tiết các demand được chấp nhận (N={len(acc_fifo)}):")
+    print("-" * 80)
+    print(f"{'ID':<5} | {'Src':<5} | {'Dst':<5} | {'BW (Mbps)':<10} | {'Path (Tuyến đường)'}")
+    print("-" * 80)
+
+
+    for item in acc_fifo:
+        path_str = "->".join(map(str, item['path']))
+        print(f"{item['id']:<5} | {item['src']:<5} | {item['tgt']:<5} | {item['bw']:<10.1f} | {path_str}")
+    print("-" * 80)
+
+
+    print(f"\n Thống kê các liên kết quá tải (>70% capacity):")
+    high_load_count = 0
+    print(f"{'Link':<15} | {'Load':<10} | {'Cap':<10} | {'Usage %'}")
+    print("-" * 50)
+
+    for u, v, d in G_fifo.edges(data=True):
+        usage = (d['load'] / d['capacity']) * 100
+        if usage > 70:
+            high_load_count += 1
+            print(f"{u}->{v:<12} | {d['load']:<10} | {d['capacity']:<10} | {usage:.2f}%")
+
+    print("-" * 50)
+    print(f"-> Tổng cộng: {high_load_count} liên kết bị quá tải.")
+
+
+    sorted_demands = []
+    for row in raw_demands:
+        src, tgt, bw = int(row[1]), int(row[2]), float(row[3])
+        try:
+
+            dist = nx.shortest_path_length(original_graph, src, tgt, weight='distance')
+            score = bw * dist
+        except:
+            score = float('inf')
+
+        sorted_demands.append({'row': row, 'score': score})
+
+
+    sorted_demands.sort(key=lambda x: x['score'])
+    optimized_input = [item['row'] for item in sorted_demands]
+
+
+    G_opt, acc_opt, blk_opt = run_simulation(original_graph, optimized_input, label="OPTIMIZED (Smart Sort)")
+
+    print("\n" + "=" * 60)
+    print(f"Giải pháp Tối đa hóa (Max N):")
+    print(f" - Chiến thuật: Sắp xếp ưu tiên (Bandwidth x Distance) nhỏ nhất trước.")
+    print(f" - Kết quả Max N: {len(acc_opt)} / {len(raw_demands)}")
+    print(f" - Hiệu quả: Tăng thêm {len(acc_opt) - len(acc_fifo)} demands so với cách chạy FIFO.")
+    print("=" * 60)
+
+
+    draw_graph(G_opt, len(acc_opt), len(raw_demands))
+
+
+def draw_graph(G, n_acc, n_total):
+    print("\n-> Đang vẽ đồ thị kết quả tối ưu...")
+    pos = {n: (G.nodes[n]['Longitude'], G.nodes[n]['Latitude']) for n in G.nodes()}
+    plt.figure(figsize=(14, 8))
+
+    edges = G.edges()
+    loads = [G[u][v]['load'] / G[u][v]['capacity'] for u, v in edges]
+
+    nx.draw_networkx_nodes(G, pos, node_size=300, node_color='lightblue', edgecolors='k')
+    nx.draw_networkx_labels(G, pos, font_size=8, font_weight='bold')
+
+
+    edges_drawn = nx.draw_networkx_edges(
+        G, pos, edge_color=loads, edge_cmap=plt.cm.coolwarm,
+        width=2, edge_vmin=0, edge_vmax=1
+    )
+
+    plt.colorbar(edges_drawn, label="Mức độ sử dụng (Load/Capacity)")
+    plt.title(f"Smart Optimization Result: {n_acc}/{n_total} Demands Accepted")
+    plt.axis('off')
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,96 @@
+import networkx as nx
+import matplotlib.pyplot as plt
+import math
+
+
+# --- 1. HÀM TÍNH KHOẢNG CÁCH HAVERSINE ---
+def haversine(lat1, lon1, lat2, lon2):
+    """Tính khoảng cách giữa 2 điểm trên trái đất (đơn vị: km)"""
+    R = 6371  # Bán kính trái đất
+
+    # Chuyển đổi độ sang radian
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lon2 - lon1)
+
+    # Công thức
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+    return R * c
+
+
+def main():
+    print("--- GIAI ĐOẠN 2: TÍNH TOÁN & MST ---")
+
+    # Đọc file (đã làm ngon lành ở bước trước)
+    G = nx.read_gml("AttMpls.gml", label='id')
+
+    # --- BƯỚC A: TÍNH TOÁN TRỌNG SỐ & CAPACITY ---
+    print("-> Đang tính toán khoảng cách và gán capacity...")
+
+    for u, v in G.edges():
+        # Lấy tọa độ của 2 đầu mút
+        lat1 = G.nodes[u]['Latitude']
+        lon1 = G.nodes[u]['Longitude']
+        lat2 = G.nodes[v]['Latitude']
+        lon2 = G.nodes[v]['Longitude']
+
+        # 1. Tính khoảng cách
+        dist = haversine(lat1, lon1, lat2, lon2)
+
+        # 2. Gán Capacity theo quy luật đề bài
+        if dist < 1000:
+            cap = 100
+        elif 1000 <= dist < 2000:
+            cap = 200
+        else:  # 2000 <= dist < 3000
+            cap = 300
+
+        # 3. Lưu thông tin vào cạnh
+        G[u][v]['weight'] = dist  # 'weight' dùng để tìm đường ngắn nhất/MST
+        G[u][v]['capacity'] = cap  # Dung lượng tối đa
+        G[u][v]['distance'] = dist  # Lưu lại để in ra nếu cần
+
+    # --- BƯỚC B: TÌM CÂY KHUNG NHỎ NHẤT (MST) ---
+    print("-> Đang tìm cây MST...")
+    # Thuật toán Kruskal/Prim có sẵn trong networkx
+    mst_edges = list(nx.minimum_spanning_edges(G, weight='weight', data=False))
+
+    # Tính tổng chiều dài cây MST [cite: 9]
+    total_mst_len = sum(G[u][v]['weight'] for u, v in mst_edges)
+    print(f"✅ TỔNG CHIỀU DÀI CÂY MST: {total_mst_len:.2f} km")
+
+    # --- BƯỚC C: VẼ ĐỒ THỊ CHUẨN ---
+    print("-> Đang vẽ hình...")
+    plt.figure(figsize=(12, 8))
+
+    # Lấy tọa độ thực tế để vẽ cho đúng bản đồ nước Mỹ [cite: 10]
+    pos = {}
+    for node in G.nodes():
+        pos[node] = (G.nodes[node]['Longitude'], G.nodes[node]['Latitude'])
+
+    # 1. Vẽ tất cả các cạnh (Nét đứt - mờ hơn)
+    # Tìm các cạnh KHÔNG thuộc MST
+    all_edges = set(tuple(sorted((u, v))) for u, v in G.edges())
+    mst_set = set(tuple(sorted((u, v))) for u, v in mst_edges)
+    non_mst_edges = list(all_edges - mst_set)
+
+    nx.draw_networkx_edges(G, pos, edgelist=non_mst_edges,
+                           style='dashed', edge_color='gray', alpha=0.5, width=1)
+
+    # 2. Vẽ các cạnh MST (Nét liền - đậm - màu đỏ)
+    nx.draw_networkx_edges(G, pos, edgelist=mst_edges,
+                           style='solid', edge_color='red', width=2.5, label='MST Edges')
+
+    # 3. Vẽ Node và Tên
+    nx.draw_networkx_nodes(G, pos, node_size=300, node_color='lightblue')
+    nx.draw_networkx_labels(G, pos, font_size=8, font_weight='bold')
+
+    plt.title(f"AT&T Backbone - MST Total: {total_mst_len:.0f} km")
+    plt.legend(loc='lower right')
+    plt.show()
+
+
+if __name__ == "__main__":
+    main()
